@@ -1,0 +1,305 @@
+-- Doors 游戏脚本
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+-- 房间管理器
+local RoomManager = {}
+RoomManager.__index = RoomManager
+
+function RoomManager.new()
+    local self = setmetatable({}, RoomManager)
+    self.rooms = {}
+    self.currentRoom = 0
+    self.maxRooms = 100
+    return self
+end
+
+-- 门类
+local Door = {}
+Door.__index = Door
+
+function Door.new(model)
+    local self = setmetatable({}, Door)
+    self.model = model
+    self.isOpen = false
+    self.isLocked = false
+    self.handle = model:WaitForChild("Handle")
+    self.hinge = model:WaitForChild("Hinge")
+    return self
+end
+
+function Door:Open()
+    if self.isOpen or self.isLocked then return end
+    
+    self.isOpen = true
+    local tweenInfo = TweenInfo.new(
+        0.5,
+        Enum.EasingStyle.Quad,
+        Enum.EasingDirection.Out
+    )
+    
+    local goal = {}
+    if self.model.PrimaryPart then
+        goal.Orientation = Vector3.new(0, 90, 0)
+        local tween = TweenService:Create(self.model.PrimaryPart, tweenInfo, goal)
+        tween:Play()
+    end
+end
+
+function Door:Lock()
+    self.isLocked = true
+    -- 门锁定效果
+    if self.handle then
+        local handleTween = TweenService:Create(
+            self.handle,
+            TweenInfo.new(0.2),
+            {Color = Color3.fromRGB(255, 0, 0)}
+        )
+        handleTween:Play()
+    end
+end
+
+-- 玩家处理器
+local PlayerHandler = {}
+
+function PlayerHandler:Init(player)
+    local character = player.Character or player.CharacterAdded:Wait()
+    local humanoid = character:WaitForChild("Humanoid")
+    local hrp = character:WaitForChild("HumanoidRootPart")
+    
+    -- 创建玩家GUI
+    local gui = Instance.new("ScreenGui")
+    gui.Parent = player.PlayerGui
+    
+    -- 创建钥匙计数器
+    local keyCounter = Instance.new("TextLabel")
+    keyCounter.Size = UDim2.new(0, 200, 0, 50)
+    keyCounter.Position = UDim2.new(0, 20, 0, 20)
+    keyCounter.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    keyCounter.BackgroundTransparency = 0.5
+    keyCounter.TextColor3 = Color3.fromRGB(255, 255, 255)
+    keyCounter.Text = "🔑 钥匙: 0"
+    keyCounter.Parent = gui
+    
+    player:SetAttribute("Keys", 0)
+end
+
+-- 实体管理器（怪物）
+local EntityManager = {}
+EntityManager.__index = EntityManager
+
+function EntityManager.new()
+    local self = setmetatable({}, EntityManager)
+    self.entities = {}
+    return self
+end
+
+function EntityManager:SpawnEntity(entityType, room)
+    local entity = Instance.new("Model")
+    entity.Name = entityType
+    
+    -- 创建碰撞箱
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(4, 6, 4)
+    part.BrickColor = BrickColor.new("Really black")
+    part.Anchored = false
+    part.CanCollide = true
+    part.Parent = entity
+    
+    local humanoid = Instance.new("Humanoid")
+    humanoid.Parent = entity
+    
+    entity.PrimaryPart = part
+    
+    -- 随机位置
+    local position = room.Position + Vector3.new(
+        math.random(-10, 10),
+        0,
+        math.random(-10, 10)
+    )
+    entity:SetPrimaryPartCFrame(CFrame.new(position))
+    entity.Parent = workspace.Entities
+    
+    table.insert(self.entities, entity)
+    
+    -- AI 行为
+    self:CreateAI(entity)
+end
+
+function EntityManager:CreateAI(entity)
+    spawn(function()
+        while entity and entity.Parent do
+            wait(math.random(1, 3))
+            
+            -- 寻找最近的玩家
+            local nearestPlayer = nil
+            local shortestDistance = math.huge
+            
+            for _, player in pairs(Players:GetPlayers()) do
+                local character = player.Character
+                if character and character:FindFirstChild("HumanoidRootPart") then
+                    local hrp = character.HumanoidRootPart
+                    local distance = (entity.PrimaryPart.Position - hrp.Position).Magnitude
+                    
+                    if distance < shortestDistance and distance < 30 then
+                        shortestDistance = distance
+                        nearestPlayer = hrp
+                    end
+                end
+            end
+            
+            if nearestPlayer then
+                -- 朝玩家移动
+                local direction = (nearestPlayer.Position - entity.PrimaryPart.Position).Unit
+                local newPosition = entity.PrimaryPart.Position + direction * 2
+                
+                local tween = TweenService:Create(
+                    entity.PrimaryPart,
+                    TweenInfo.new(0.5),
+                    {CFrame = CFrame.new(newPosition)}
+                )
+                tween:Play()
+            end
+        end
+    end)
+end
+
+-- 物品系统
+local ItemManager = {}
+
+function ItemManager:CreateKey(position)
+    local key = Instance.new("Part")
+    key.Size = Vector3.new(1, 0.2, 0.5)
+    key.BrickColor = BrickColor.new("Bright yellow")
+    key.Material = Enum.Material.Neon
+    key.Anchored = false
+    key.CanCollide = true
+    key.Position = position
+    key.Parent = workspace.Items
+    
+    -- 添加触碰检测
+    local clickDetector = Instance.new("ClickDetector")
+    clickDetector.Parent = key
+    clickDetector.MaxActivationDistance = 10
+    
+    clickDetector.MouseClick:Connect(function(player)
+        key:Destroy()
+        local currentKeys = player:GetAttribute("Keys") or 0
+        player:SetAttribute("Keys", currentKeys + 1)
+        
+        -- 更新GUI
+        if player.PlayerGui:FindFirstChild("ScreenGui") then
+            local keyCounter = player.PlayerGui.ScreenGui:FindFirstChild("TextLabel")
+            if keyCounter then
+                keyCounter.Text = "🔑 钥匙: " .. tostring(currentKeys + 1)
+            end
+        end
+    end)
+    
+    -- 旋转动画
+    spawn(function()
+        while key and key.Parent do
+            key.CFrame = key.CFrame * CFrame.Angles(0, math.rad(5), 0)
+            wait(0.1)
+        end
+    end)
+end
+
+-- 主游戏循环
+local gameManager = {
+    roomManager = RoomManager.new(),
+    entityManager = EntityManager.new()
+}
+
+-- 玩家加入处理
+Players.PlayerAdded:Connect(function(player)
+    print(player.Name .. " 加入了游戏")
+    PlayerHandler:Init(player)
+    
+    -- 生成第一个房间
+    local startRoom = Instance.new("Model")
+    startRoom.Name = "Room_0"
+    startRoom.Parent = workspace.Rooms
+    
+    local floor = Instance.new("Part")
+    floor.Size = Vector3.new(30, 1, 30)
+    floor.BrickColor = BrickColor.new("Dark gray")
+    floor.Anchored = true
+    floor.Parent = startRoom
+    
+    local walls = {}
+    for i = 1, 4 do
+        local wall = Instance.new("Part")
+        wall.Size = Vector3.new(30, 10, 1)
+        wall.BrickColor = BrickColor.new("Medium stone grey")
+        wall.Anchored = true
+        wall.Parent = startRoom
+        table.insert(walls, wall)
+    end
+    
+    -- 设置墙壁位置
+    walls[1].Position = Vector3.new(0, 5, 15)  -- 前墙
+    walls[2].Position = Vector3.new(0, 5, -15) -- 后墙
+    walls[3].Position = Vector3.new(15, 5, 0)  -- 右墙
+    walls[4].Position = Vector3.new(-15, 5, 0) -- 左墙
+    
+    -- 创建门
+    local doorModel = Instance.new("Model")
+    doorModel.Name = "Door"
+    
+    local doorPart = Instance.new("Part")
+    doorPart.Size = Vector3.new(4, 7, 0.5)
+    doorPart.BrickColor = BrickColor.new("Brown")
+    doorPart.Anchored = false
+    doorPart.CanCollide = true
+    doorPart.Parent = doorModel
+    
+    local hinge = Instance.new("Part")
+    hinge.Size = Vector3.new(0.5, 7, 0.5)
+    hinge.Visible = false
+    hinge.Anchored = true
+    hinge.CanCollide = false
+    hinge.Parent = doorModel
+    
+    doorModel.PrimaryPart = doorPart
+    doorModel:SetPrimaryPartCFrame(CFrame.new(0, 2.5, 14.5))
+    doorModel.Parent = startRoom
+    
+    local door = Door.new(doorModel)
+    
+    -- 添加门交互
+    local proximityPrompt = Instance.new("ProximityPrompt")
+    proximityPrompt.Parent = doorPart
+    proximityPrompt.ActionText = "开门"
+    proximityPrompt.HoldDuration = 0
+    proximityPrompt.MaxActivationDistance = 10
+    
+    proximityPrompt.Triggered:Connect(function(player)
+        door:Open()
+        
+        -- 有几率生成实体
+        if math.random(1, 5) == 1 then
+            gameManager.entityManager:SpawnEntity("Seeker", startRoom)
+        end
+        
+        -- 生成钥匙
+        if math.random(1, 3) == 1 then
+            gameManager.itemManager:CreateKey(startRoom.Position + Vector3.new(5, 1, 5))
+        end
+    end)
+end)
+
+-- 玩家离开处理
+Players.PlayerRemoving:Connect(function(player)
+    print(player.Name .. " 离开了游戏")
+end)
+
+-- 初始化
+spawn(function()
+    workspace.Rooms:ClearAllChildren()
+    workspace.Entities:ClearAllChildren()
+    workspace.Items:ClearAllChildren()
+    
+    print("DOORS 游戏已启动!")
+end)
